@@ -12,7 +12,7 @@ github_repo: "https://github.com/wqqiscool/wqqiscool.github.io.git" # you code r
 # Sidebar settings
 sidebar: true                           # whether or not using Sidebar.
 sidebar-about-description: "任由多大单，地有多大产!"
-sidebar-avatar: /img/about-BY-gentle.jpg      # use absolute URL, seeing it's used in both `/` and `/about/`
+sidebar-avatar: /img/wqq.jpg      # use absolute URL, seeing it's used in both `/` and `/about/`
 
 
 
