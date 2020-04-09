@@ -62,8 +62,10 @@ kramdown:
 # Gitalk
 gitalk:
   enable: true    #是否开启Gitalk评论
-  clientID: Iv1.3082b45650c5f042                           #生成的clientID
-  clientSecret: 252efbd13d3a0747d1a007380bbe47789eee93b8    #生成的clientSecret
+  clientID: 812ce1e1c11661e5285c                           #生成的clientID
+  clientSecret: 30d2ea7d584313d927f287dbbbd98b7fdaca85ef
+
+   #生成的clientSecret
   repo: wqqiscool.github.io    #仓库名称
   owner: wqqiscool    #github用户名
   admin: wqqiscool
