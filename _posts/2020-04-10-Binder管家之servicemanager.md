@@ -182,7 +182,94 @@ fail_open:
 
 
 可以看到在从上层传入到open指令到这时，此时的open不仅仅open，还做了一件mmap（妈买皮）的事情：
-+  bs->fd = open(driver, O_RDWR | O_CLOEXEC);
++  bs->fd = open(driver, O_RDWR \| O_CLOEXEC);
 +  bs->mapped = mmap(NULL, mapsize, PROT_READ, MAP_PRIVATE, bs->fd, 0);
 
-当然上篇文章讲到过。[回顾一下]https://wqqiscool.github.io/2020/04/08/Binder%E9%A9%B1%E5%8A%A8%E5%B1%82%E6%8E%A2%E7%A9%B6/#binder_open()
+当然上篇文章讲到过。[回顾一下](https://wqqiscool.github.io/2020/04/08/Binder%E9%A9%B1%E5%8A%A8%E5%B1%82%E6%8E%A2%E7%A9%B6/#binder_open)
+
+##### binder_become_context_manager
+回顾完open，其实跟别的应用open别无二致，无非就是生成了一个叫`binder_proc`的东东，加入到全局列表中，进入到这一步就是差别了，成为大管家，不信你看：
+
+	
+	int binder_become_context_manager(struct binder_state *bs)
+{
+    return ioctl(bs->fd, BINDER_SET_CONTEXT_MGR, 0);
+	}
+
+wtf，就这么一句完事了，看官莫要急，越是简单，事越大。这一步就直接升华了呀，小朋友你是否有很多？？？，**进入binder驱动层ioctl就是进入binder驱动层的门户**，我们且进入到驱动层的“binder.c”[---go,go,go](https://android.googlesource.com/kernel/x86_64/+/refs/tags/android-8.0.0_r0.5/drivers/android/binder.c)
+
+
+	static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	int ret;
+	struct binder_proc *proc = filp->private_data;
+	struct binder_thread *thread;
+	unsigned int size = _IOC_SIZE(cmd);
+	void __user *ubuf = (void __user *)arg;
+	/*pr_info("binder_ioctl: %d:%d %x %lx\n",
+			proc->pid, current->pid, cmd, arg);*/
+	trace_binder_ioctl(cmd, arg);
+	ret = wait_event_interruptible(binder_user_error_wait, binder_stop_on_user_error < 2);
+	if (ret)
+		goto err_unlocked;
+	binder_lock(__func__);
+	thread = binder_get_thread(proc);
+	if (thread == NULL) {
+		ret = -ENOMEM;
+		goto err;
+	}
+	switch (cmd) {
+	case BINDER_WRITE_READ:
+		ret = binder_ioctl_write_read(filp, cmd, arg, thread);
+		if (ret)
+			goto err;
+		break;
+	case BINDER_SET_MAX_THREADS:
+		if (copy_from_user_preempt_disabled(&proc->max_threads, ubuf, sizeof(proc->max_threads))) {
+			ret = -EINVAL;
+			goto err;
+		}
+		break;
+	case BINDER_SET_CONTEXT_MGR:
+		ret = binder_ioctl_set_ctx_mgr(filp);
+		if (ret)
+			goto err;
+		break;
+	case BINDER_THREAD_EXIT:
+		binder_debug(BINDER_DEBUG_THREADS, "%d:%d exit\n",
+			     proc->pid, thread->pid);
+		binder_free_thread(proc, thread);
+		thread = NULL;
+		break;
+	case BINDER_VERSION: {
+		struct binder_version __user *ver = ubuf;
+		if (size != sizeof(struct binder_version)) {
+			ret = -EINVAL;
+			goto err;
+		}
+		if (put_user_preempt_disabled(BINDER_CURRENT_PROTOCOL_VERSION,
+			     &ver->protocol_version)) {
+			ret = -EINVAL;
+			goto err;
+		}
+		break;
+	}
+	default:
+		ret = -EINVAL;
+		goto err;
+	}
+	ret = 0;
+err:
+	if (thread)
+		thread->looper &= ~BINDER_LOOPER_STATE_NEED_RETURN;
+	binder_unlock(__func__);
+	wait_event_interruptible(binder_user_error_wait, binder_stop_on_user_error < 2);
+	if (ret && ret != -ERESTARTSYS)
+		pr_info("%d:%d ioctl %x %lx returned %d\n", proc->pid, current->pid, cmd, arg, ret);
+err_unlocked:
+	trace_binder_ioctl_done(ret);
+	return ret;
+	}
+ 
+
+
