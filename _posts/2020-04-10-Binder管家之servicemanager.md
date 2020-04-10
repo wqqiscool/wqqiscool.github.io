@@ -272,4 +272,143 @@ err_unlocked:
 	}
  
 
+柳暗花明又一村，是不是看到了`case`里面的**BINDER_SET_CONTEXT_MGR**,进入`ret = binder_ioctl_set_ctx_mgr(filp)`，看一下：
 
+	static int binder_ioctl_set_ctx_mgr(struct file *filp)
+{
+	int ret = 0;
+	struct binder_proc *proc = filp->private_data;
+	struct binder_context *context = proc->context;
+	kuid_t curr_euid = current_euid();
+	if (context->binder_context_mgr_node) {
+		pr_err("BINDER_SET_CONTEXT_MGR already set\n");
+		ret = -EBUSY;
+		goto out;
+	}
+	ret = security_binder_set_context_mgr(proc->tsk);
+	if (ret < 0)
+		goto out;
+	if (uid_valid(context->binder_context_mgr_uid)) {
+		if (!uid_eq(context->binder_context_mgr_uid, curr_euid)) {
+			pr_err("BINDER_SET_CONTEXT_MGR bad uid %d != %d\n",
+			       from_kuid(&init_user_ns, curr_euid),
+			       from_kuid(&init_user_ns,
+					 context->binder_context_mgr_uid));
+			ret = -EPERM;
+			goto out;
+		}
+	} else {
+		context->binder_context_mgr_uid = curr_euid;
+	}
+	context->binder_context_mgr_node = binder_new_node(proc, 0, 0);
+	if (!context->binder_context_mgr_node) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	context->binder_context_mgr_node->local_weak_refs++;
+	context->binder_context_mgr_node->local_strong_refs++;
+	context->binder_context_mgr_node->has_strong_ref = 1;
+	context->binder_context_mgr_node->has_weak_ref = 1;
+out:
+	return ret;
+	}
+
+
+先[回顾一下前面open的时候干了撒子]()，仔细一把拉，发现还有个玩意叫`binder_context`
+
+
+	struct binder_context {
+	struct binder_node *binder_context_mgr_node;
+	kuid_t binder_context_mgr_uid;
+	const char *name;
+	};
+
+既然成文大管家，自然和这个`binder_context' 的东西脱离不了关系，里面有`binder_node`
+
+
+	struct binder_node {
+	int debug_id;
+	struct binder_work work;
+	union {
+		struct rb_node rb_node;
+		struct hlist_node dead_node;
+	};
+	struct binder_proc *proc;
+	struct hlist_head refs;
+	int internal_strong_refs;
+	int local_weak_refs;
+	int local_strong_refs;
+	binder_uintptr_t ptr;
+	binder_uintptr_t cookie;
+	unsigned has_strong_ref:1;
+	unsigned pending_strong_ref:1;
+	unsigned has_weak_ref:1;
+	unsigned pending_weak_ref:1;
+	unsigned has_async_transaction:1;
+	unsigned accept_fds:1;
+	unsigned min_priority:8;
+	struct list_head async_todo;
+};
+
+
+
+`binder_node`就是“binder实体”，与之对应的则是`binder_ref`
+
+
+	struct binder_ref {
+	/* Lookups needed: */
+	/*   node + proc => ref (transaction) */
+	/*   desc + proc => ref (transaction, inc/dec ref) */
+	/*   node => refs + procs (proc exit) */
+	int debug_id;
+	struct rb_node rb_node_desc;
+	struct rb_node rb_node_node;
+	struct hlist_node node_entry;
+	struct binder_proc *proc;
+	struct binder_node *node;
+	uint32_t desc;
+	int strong;
+	int weak;
+	struct binder_ref_death *death;
+};
+
+
+言归正传，回到`binder_ioctl_set_ctx_mgr`函数中去，将`binder_new_node(0,0,proc)`生成的实体赋值给了context里里面的`binder_context_mgr_node`,这不还就促成其成文管家了吗？
+
+	
+	static struct binder_node *binder_new_node(struct binder_proc *proc,
+					   binder_uintptr_t ptr,
+					   binder_uintptr_t cookie)
+{
+	struct rb_node **p = &proc->nodes.rb_node;
+	struct rb_node *parent = NULL;
+	struct binder_node *node;
+	while (*p) {
+		parent = *p;
+		node = rb_entry(parent, struct binder_node, rb_node);
+		if (ptr < node->ptr)
+			p = &(*p)->rb_left;
+		else if (ptr > node->ptr)
+			p = &(*p)->rb_right;
+		else
+			return NULL;
+	}
+	node = kzalloc_preempt_disabled(sizeof(*node));
+	if (node == NULL)
+		return NULL;
+	binder_stats_created(BINDER_STAT_NODE);
+	rb_link_node(&node->rb_node, parent, p);
+	rb_insert_color(&node->rb_node, &proc->nodes);
+	node->debug_id = ++binder_last_id;
+	node->proc = proc;
+	node->ptr = ptr;
+	node->cookie = cookie;
+	node->work.type = BINDER_WORK_NODE;
+	INIT_LIST_HEAD(&node->work.entry);
+	INIT_LIST_HEAD(&node->async_todo);
+	binder_debug(BINDER_DEBUG_INTERNAL_REFS,
+		     "%d:%d node %d u%016llx c%016llx created\n",
+		     proc->pid, current->pid, node->debug_id,
+		     (u64)node->ptr, (u64)node->cookie);
+	return node;
+	}
