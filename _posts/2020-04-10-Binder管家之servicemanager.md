@@ -568,7 +568,7 @@ out:
 + binder_thead_write
 + binder_thread_read
 
-####### binder_tread_write
+###### binder_tread_write
 
 
 	static int binder_thread_write(struct binder_proc *proc,
@@ -945,7 +945,7 @@ out:
 
 这是一个无穷尽的for循环，又将`readbuf`赋值给了`bwr_write_read`,执行`ioctl`，进入到`bidner_thread_read`分支
 
-####### binder_thread_read
+###### binder_thread_read
 	
 	static int binder_thread_read(struct binder_proc *proc,
 			      struct binder_thread *thread,
@@ -1244,8 +1244,8 @@ done:
 读了一通，就是对`binder_thread` 里面的`tread_todo`和proc里面的`proc_todo`进行命令处理，对于servicemanager来说就是看看client发过来的一些请求的服务例如[注册服务、查询服务]()，对于其他服务则是对应其他声明的方法。
 
 
-####### binder_parse
-我们继续回溯到[binder_looper]()
+###### binder_parse
+我们继续回溯到[binder_looper]()之`   res = binder_parse(bs, 0, (uintptr_t) readbuf, bwr.read_consumed, func);`
 
 	int binder_parse(struct binder_state *bs, struct binder_io *bio,
                  uintptr_t ptr, size_t size, binder_handler func)
@@ -1335,4 +1335,6 @@ done:
 
 
 
-
+注意此时的 `BR_TRANSATION`,`BR_REBPLY`
+`BR_TRANSATION`这是解析传递过来的命令，然后进行执行对应的服务方法;
+`BR_REPLY`则是：
