@@ -1,8 +1,8 @@
 ---
 layout:     post
 title:     Binder通信“管家”
-subtitle:    servicemanager之获取
-date:       2020-04-12
+subtitle:    servicemanager之被使用
+date:       2020-04-13
 author:     wqq
 header-img: img/post-bg-ios9-web.jpg
 catalog: true
