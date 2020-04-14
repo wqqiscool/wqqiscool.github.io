@@ -21,13 +21,14 @@ tags:
 + 开启looper循环
 
 #### 概述
-smr启动后就一直在循环当中了，不断的接受外部service和外部client的驱使，此时的smr充当的是binder通信过程中的service，外部service和client 都是作为client 角色的额主要目录源码文件：[framework/libs/binder](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-8.0.0_r45/libs/binder/) 和[framework/av/media/meadiaservice/](https://android.googlesource.com/platform/frameworks/av/+/refs/tags/android-8.0.0_r45/media/mediaserver/main_mediaserver.cpp)和[frameworks/base/include/binder](https://android.googlesource.com/platform/frameworks/base/+/e8331bd2e7ad3d62140143cafba3ff69be028557/include/binder)
+smr启动后就一直在循环当中了，不断的接受外部service和外部client的驱使，此时的smr充当的是binder通信过程中的service，外部service和client 都是作为client 角色的额主要目录源码文件：[frameworks/native/libs/binder](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-8.0.0_r45/libs/binder/) 和[framework/av/media/meadiaservice/](https://android.googlesource.com/platform/frameworks/av/+/refs/tags/android-8.0.0_r45/media/mediaserver/main_mediaserver.cpp)和[frameworks/native/libs/binder/include/binder](https://android.googlesource.com/platform/frameworks/native/+/refs/tags/android-8.0.0_r45/libs/binder/include/binder)
 + Binder.cpp
 + Bpbinder.cpp
 + IInteface.cpp
 + IPCThread.cpp
 + ProcessState.cpp
 + Parcel.cpp
++ IserviceManager.cpp
 + ...
 + main_mediaservice.cpp
 + ...
@@ -68,6 +69,7 @@ smr这个服务是所有client可以主动知晓其handle-0的服务，作为一
     gProcess = new ProcessState("/dev/binder");
     return gProcess;
 	}
+
 
 采用了单例模式，若是非NULL直接返回，若是NULL（第一次）则调用其构造函数:
 
@@ -181,8 +183,42 @@ smr这个服务是所有client可以主动知晓其handle-0的服务，作为一
     return result;
 	}
 
-这个方法就是
 
+结构体：`handle_entry` 位于`ProcessState.h`
+
+	struct handle_entry {
+                IBinder* binder;
+                RefBase::weakref_type* refs;
+        };
+
+
+查找是否拥有过？`lookupHandleLocked(handle)`
+
+	ProcessState::handle_entry* ProcessState::lookupHandleLocked(int32_t handle)
+{
+    const size_t N=mHandleToObject.size();
+    if (N <= (size_t)handle) {
+        handle_entry e;
+        e.binder = NULL;
+        e.refs = NULL;
+        status_t err = mHandleToObject.insertAt(e, N, handle+1-N);
+        if (err < NO_ERROR) return NULL;
+    }
+    return &mHandleToObject.editItemAt(handle);
+}
+
+此时是空的vector，因此返回一个`Ibinder`为空的`handle_entry`，回到`getStrongProxyForHandle(int32_t handle)`,因为handle为0,会进行一个特殊的ping处理，接着往下走，走到`b = new BpBinder(handle)`，保留此记忆。
+
+	BpBinder::BpBinder(int32_t handle)
+    : mHandle(handle)
+    , mAlive(1)
+    , mObitsSent(0)
+    , mObituaries(NULL)
+{
+    ALOGV("Creating BpBinder %p handle %d\n", this, mHandle);
+    extendObjectLifetime(OBJECT_LIFETIME_WEAK);
+    IPCThreadState::self()->incWeakHandle(handle);
+	}	
 	
 也是单例模式，如果非NULL，直接返回，否则调用`interface_cast<IServiceManager>(ProcessState::self()->getContextObject(NULL));`,注意`interface_cast`,也是个模板方法，位于[frameworks/base/include/binder/IInteface.h](https://android.googlesource.com/platform/frameworks/base/+/e8331bd2e7ad3d62140143cafba3ff69be028557/include/binder/IInterface.h)
 
@@ -229,7 +265,8 @@ inline sp<INTERFACE> interface_cast(const sp<IBinder>& obj)
     I##INTERFACE::~I##INTERFACE() { }                                   \
 
 
-皇天不服有心人，这代码写的好棒（绕），
+皇天不服有心人，这代码写的好棒（绕），可以转化成new Bpbinder(0)->queryLoacalInterface("android.os.IServiceManager").get,返回null进入到下一步，返回BpServiceManager(new BpBinder(0));
+
 #### 使用服务
 
 
