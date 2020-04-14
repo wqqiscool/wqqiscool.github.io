@@ -264,8 +264,62 @@ inline sp<INTERFACE> interface_cast(const sp<IBinder>& obj)
     I##INTERFACE::I##INTERFACE() { }                                    \
     I##INTERFACE::~I##INTERFACE() { }                                   \
 
+注意在Binder.cpp 中有一段代码
 
-皇天不服有心人，这代码写的好棒（绕），可以转化成new Bpbinder(0)->queryLoacalInterface("android.os.IServiceManager").get,返回null进入到下一步，返回BpServiceManager(new BpBinder(0));
+	sp<IInterface>  IBinder::queryLocalInterface(const String16& /*descriptor*/)
+{
+    return NULL;
+	}
+
+真晕，这个queryLocalInterface方法为何不在Ibinder.h中实现，非要在这实现，搞得"不伦不类？？？"
+皇天不服有心人，这代码写的好棒（绕），可以转化成new Bpbinder(0)->queryLoacalInterface("android.os.IServiceManager").get,返回null进入到下一步，返回BpServiceManager(new BpBinder(0));我们看下其构造函数：
+
+	explicit BpServiceManager(const sp<IBinder>& impl)
+        : BpInterface<IServiceManager>(impl)
+    {
+    }
+
+再进入IInterface.h查看下`BpInterface<Interface>(...)`,好嘛又是一个模板方法：
+
+	template<typename INTERFACE>
+class BpInterface : public INTERFACE, public BpRefBase
+{
+public:
+    explicit                    BpInterface(const sp<IBinder>& remote);
+protected:
+    virtual IBinder*            onAsBinder();
+};
+....
+template<typename INTERFACE>
+inline BpInterface<INTERFACE>::BpInterface(const sp<IBinder>& remote)
+    : BpRefBase(remote)
+{
+	}
+
+我们来看`Refbase`位于`binder.h`
+
+	class BpRefBase : public virtual RefBase
+{
+protected:
+                            BpRefBase(const sp<IBinder>& o);
+    virtual                 ~BpRefBase();
+    virtual void            onFirstRef();
+    virtual void            onLastStrongRef(const void* id);
+    virtual bool            onIncStrongAttempted(uint32_t flags, const void* id);
+    inline  IBinder*        remote()                { return mRemote; }
+    inline  IBinder*        remote() const          { return mRemote; }
+private:
+                            BpRefBase(const BpRefBase& o);
+    BpRefBase&              operator=(const BpRefBase& o);
+    IBinder* const          mRemote;
+    RefBase::weakref_type*  mRefs;
+    volatile int32_t        mState;
+};
+	}; // namespace android
+
+
+
+
 
 #### 使用服务
 
