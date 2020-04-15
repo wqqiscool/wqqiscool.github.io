@@ -318,9 +318,79 @@ private:
 	}; // namespace android
 
 
+最终将Bpbinder赋值给了`mRemote`这个常量。这就是最终通信的入口。至此就得到了`BpServiceManager`,之后添加服务，查询服务就由此开始啦
 
+##### '真正'的注册服务--addservice
+前面我们得到了`BpServiceManager`,接着回到`main_mediaserver.cpp`中的下一句` MediaPlayerService::instantiate()`,这估计就是注册了，好我们进入到[frameworks/av/media/libmediaplayerservice](https://android.googlesource.com/platform/frameworks/av/+/refs/tags/android-8.0.0_r45/media/libmediaplayerservice/) 去：
++ MediaPlayerService.cpp
++ ...
 
+进入到`instantiate()`
 
+	void MediaPlayerService::instantiate() {
+    defaultServiceManager()->addService(
+            String16("media.player"), new MediaPlayerService());
+	}
+
+果不其然，还是很简单，这不用到了上面申请的了`BpServiceManager` 了，好我们再回到其中的注册服务里面去：
+
+	virtual status_t addService(const String16& name, const sp<IBinder>& service,
+            bool allowIsolated)
+    {
+        Parcel data, reply;
+        data.writeInterfaceToken(IServiceManager::getInterfaceDescriptor());
+        data.writeString16(name);
+        data.writeStrongBinder(service);
+        data.writeInt32(allowIsolated ? 1 : 0);
+        status_t err = remote()->transact(ADD_SERVICE_TRANSACTION, data, &reply);
+        return err == NO_ERROR ? reply.readExceptionCode() : err;
+	}
+
+将要发送的数据写`Parcel`中去，调用`remote()->transact(ADD_SERVICE_TRANSACTION, data, &reply);` 注册服务，
 #### 使用服务
 
+我们知道`mRemote` 就是一个`BpBinder` ,因此回溯到里面的`transcat`方法中去：
+
+	status_t BpBinder::transact(
+    uint32_t code, const Parcel& data, Parcel* reply, uint32_t flags)
+{
+    // Once a binder has died, it will never come back to life.
+    if (mAlive) {
+        status_t status = IPCThreadState::self()->transact(
+            mHandle, code, data, reply, flags);
+        if (status == DEAD_OBJECT) mAlive = 0;
+        return status;
+    }
+    return DEAD_OBJECT;
+	}
+
+又出现了一个新类`IPCTreadState::self()->transcat`
+
+	IPCThreadState* IPCThreadState::self()
+{
+    if (gHaveTLS) {
+restart:
+        const pthread_key_t k = gTLS;
+        IPCThreadState* st = (IPCThreadState*)pthread_getspecific(k);
+        if (st) return st;
+        return new IPCThreadState;
+    }
+    if (gShutdown) {
+        ALOGW("Calling IPCThreadState::self() during shutdown is dangerous, expect a crash.\n");
+        return NULL;
+    }
+    pthread_mutex_lock(&gTLSMutex);
+    if (!gHaveTLS) {
+        int key_create_value = pthread_key_create(&gTLS, threadDestructor);
+        if (key_create_value != 0) {
+            pthread_mutex_unlock(&gTLSMutex);
+            ALOGW("IPCThreadState::self() unable to create TLS key, expect a crash: %s\n",
+                    strerror(key_create_value));
+            return NULL;
+        }
+        gHaveTLS = true;
+    }
+    pthread_mutex_unlock(&gTLSMutex);
+    goto restart;
+	}
 
