@@ -1675,4 +1675,50 @@ err_no_context_mgr_node:
 		thread->return_error = return_error;
 	}
 
-好家伙，更长：
+好家伙，更长,不过貌似是终于干点正事了，里面出现了我们渴望的一些`target`，`target_proc,target_thread,target_node,target_list`,这是不是意味着要把发送的数据（本次是注册服务）发给目标proc对应的目标方法？向下看：
+我们知道我们此次是进入到fei`reply`的分支：先看下这个方法`ref = binder_get_ref(proc, tr->target.handle, true);`
+
+	static struct binder_ref *binder_get_ref(struct binder_proc *proc,
+					 uint32_t desc, bool need_strong_ref)
+{
+	struct rb_node *n = proc->refs_by_desc.rb_node;
+	struct binder_ref *ref;
+	while (n) {
+		ref = rb_entry(n, struct binder_ref, rb_node_desc);
+		if (desc < ref->desc) {
+			n = n->rb_left;
+		} else if (desc > ref->desc) {
+			n = n->rb_right;
+		} else if (need_strong_ref && !ref->strong) {
+			binder_user_error("tried to use weak ref as strong ref\n");
+			return NULL;
+		} else {
+			return ref;
+		}
+	}
+	return NULL;
+	}
+
+我们还是否一直记得我们最初的handle传的是啥？没错就是`0`，因此会进入下面的分支：
+
+	`target_node = context->binder_context_mgr_node;
+			if (target_node == NULL) {
+				return_error = BR_DEAD_REPLY;
+				goto err_no_context_mgr_node;
+			}
+	}`
+
+
+终于等到你还好我没放弃，我们千辛万苦拿到了大boss--0号实体--
+然后执行了下面的:
+
+	if (target_thread) {
+		e->to_thread = target_thread->pid;
+		target_list = &target_thread->todo;
+		target_wait = &target_thread->wait;
+	} else {
+		target_list = &target_proc->todo;
+		target_wait = &target_proc->wait;
+	}
+
+这时候thread应该是null？？？？，因此target_list=&target_proc->todo 会被执行，下一步肯定是把要执行的内容加到“todo”列表里面去
