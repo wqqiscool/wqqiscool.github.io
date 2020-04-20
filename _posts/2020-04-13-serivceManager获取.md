@@ -794,19 +794,20 @@ err_unlocked:
 首先是从该个进程的`proc`中的`rb_node`类型的threades.rb_node去寻找一下，这里面我们碰到一个`current`这个玩意，并没有发现其踪迹何在binder.c中，我们看下：`current.h`:
 	
 	#ifndef _ASM_X86_CURRENT_H
-#define _ASM_X86_CURRENT_H
-#include <linux/compiler.h>
-#include <asm/percpu.h>
-#ifndef __ASSEMBLY__
-struct task_struct;
-DECLARE_PER_CPU(struct task_struct *, current_task);
-static __always_inline struct task_struct *get_current(void)
-{
+	#define _ASM_X86_CURRENT_H
+	#include <linux/compiler.h>
+	#include <asm/percpu.h>
+	#ifndef __ASSEMBLY__
+	struct task_struct;
+	DECLARE_PER_CPU(struct task_struct *, current_task);
+	static __always_inline struct task_struct *get_current(void)
+	{
 	return this_cpu_read_stable(current_task);
-}
-#define current get_current()
-#endif /* __ASSEMBLY__ */
+	}
+	#define current get_current()
+	#endif /* __ASSEMBLY__ */
 	#endif /* _ASM_X86_CURRENT_H */
+
 
 发现`current`是一个指向`task_struct`类型的指针，看这个东西是啥：
 [以后再深入研究吧，涉及到内核进程结构体调度](https://www.cnblogs.com/wipan/p/9488318.html)，我们现在只要明确`current`指向当前进程的`task_struct`,而此结构体是存储进程相关信息的。
