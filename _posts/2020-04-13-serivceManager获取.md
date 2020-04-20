@@ -346,7 +346,47 @@ private:
         return err == NO_ERROR ? reply.readExceptionCode() : err;
 	}
 
-将要发送的数据写`Parcel`中去，调用`remote()->transact(ADD_SERVICE_TRANSACTION, data, &reply);` 注册服务，
+将要发送的数据写`Parcel`中去，调用`remote()->transact(ADD_SERVICE_TRANSACTION, data, &reply);` 注册服务，注意有一句`data->writeStrongBinder(service)`,进入到`Parcel.cpp` 里面的方法看下：
+
+	status_t Parcel::writeStrongBinder(const sp<IBinder>& val)
+{
+    return flatten_binder(ProcessState::self(), val, this);
+	}
+
+再进入到`flatten_binder()`:
+
+	status_t flatten_binder(const sp<ProcessState>& proc,
+    const sp<IBinder>& binder, Parcel* out)
+{
+    flat_binder_object obj;
+    
+    obj.flags = 0x7f | FLAT_BINDER_FLAG_ACCEPTS_FDS;
+    if (binder != NULL) {
+        IBinder *local = binder->localBinder();
+        if (!local) {
+            BpBinder *proxy = binder->remoteBinder();
+            if (proxy == NULL) {
+                ALOGE("null proxy");
+            }
+            const int32_t handle = proxy ? proxy->handle() : 0;
+            obj.type = BINDER_TYPE_HANDLE;
+            obj.handle = handle;
+            obj.cookie = NULL;
+        } else {
+            obj.type = BINDER_TYPE_BINDER;
+            obj.binder = local->getWeakRefs();
+            obj.cookie = local;
+        }
+    } else {
+        obj.type = BINDER_TYPE_BINDER;
+        obj.binder = NULL;
+        obj.cookie = NULL;
+    }
+    
+    return finish_flatten_binder(binder, obj, out);
+	}
+
+因为是在本地，所以不为空，进入else 分支，设置obj的type 为`BINDER_TYPE_BINDER`
 #### 使用服务
 
 我们知道`mRemote` 就是一个`BpBinder` ,因此回溯到里面的`transcat`方法中去：
@@ -665,7 +705,7 @@ finish:
     return err;
 	}
 
-声明一个`binder_write_read`结构体bwr，将`Parcel`类型的`mOut`里面的data读取到**bwr**中，执行一句`(ioctl(mProcess->mDriverFD, BINDER_WRITE_READ, &bwr)`，终于来到了这,我们再次回到binder.c,再来捋捋：
+声明一个`binder_write_read`结构体bwr，将`Parcel`类型的`mOut`里面的data读取到**bwr**中，执行一句`(ioctl(mProcess->mDriverFD, BINDER_WRITE_READ, &bwr)`，终于来到了这,我们再次回到[binder.c](https://android.googlesource.com/kernel/x86_64/+/refs/tags/android-8.0.0_r0.5/drivers/android/binder.c),再来捋捋：
 
 	static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
@@ -1678,7 +1718,7 @@ err_no_context_mgr_node:
 	}
 
 好家伙，更长,不过貌似是终于干点正事了，里面出现了我们渴望的一些`target`，`target_proc,target_thread,target_node,target_list`,这是不是意味着要把发送的数据（本次是注册服务）发给目标proc对应的目标方法？向下看：
-我们知道我们此次是进入到fei`reply`的分支：先看下这个方法`ref = binder_get_ref(proc, tr->target.handle, true);`
+我们知道我们此次是进入到非`reply`（BC_TRANSACTION）的分支：先看下这个方法`ref = binder_get_ref(proc, tr->target.handle, true);`
 
 	static struct binder_ref *binder_get_ref(struct binder_proc *proc,
 					 uint32_t desc, bool need_strong_ref)
@@ -1711,6 +1751,168 @@ err_no_context_mgr_node:
 	}`
 
 
+我们之前在往`mOut`写入`flat_binder_object`时候设置过其type为`binder_type_binder`,因此我们进入了其中的的分支：
+	
+	case BINDER_TYPE_BINDER:
+	case BINDER_TYPE_WEAK_BINDER: {
+		struct flat_binder_object *fp;
+		fp = to_flat_binder_object(hdr);
+		ret = binder_translate_binder(fp, t, thread);
+		if (ret < 0) {
+			return_error = BR_FAILED_REPLY;
+			goto err_translate_failed;
+		}
+	} break;
+
+我们继续探究里面的方法：`binder_translate_binder(fp,t,thread)`
+	
+	static int binder_translate_binder(struct flat_binder_object *fp,
+				   struct binder_transaction *t,
+				   struct binder_thread *thread)
+{
+	struct binder_node *node;
+	struct binder_ref *ref;
+	struct binder_proc *proc = thread->proc;
+	struct binder_proc *target_proc = t->to_proc;
+	node = binder_get_node(proc, fp->binder);
+	if (!node) {
+		node = binder_new_node(proc, fp->binder, fp->cookie);
+		if (!node)
+			return -ENOMEM;
+		node->min_priority = fp->flags & FLAT_BINDER_FLAG_PRIORITY_MASK;
+		node->accept_fds = !!(fp->flags & FLAT_BINDER_FLAG_ACCEPTS_FDS);
+	}
+	if (fp->cookie != node->cookie) {
+		binder_user_error("%d:%d sending u%016llx node %d, cookie mismatch %016llx != %016llx\n",
+				  proc->pid, thread->pid, (u64)fp->binder,
+				  node->debug_id, (u64)fp->cookie,
+				  (u64)node->cookie);
+		return -EINVAL;
+	}
+	if (security_binder_transfer_binder(proc->tsk, target_proc->tsk))
+		return -EPERM;
+	ref = binder_get_ref_for_node(target_proc, node);
+	if (!ref)
+		return -EINVAL;
+	if (fp->hdr.type == BINDER_TYPE_BINDER)
+		fp->hdr.type = BINDER_TYPE_HANDLE;
+	else
+		fp->hdr.type = BINDER_TYPE_WEAK_HANDLE;
+	fp->binder = 0;
+	fp->handle = ref->desc;
+	fp->cookie = 0;
+	binder_inc_ref(ref, fp->hdr.type == BINDER_TYPE_HANDLE, &thread->todo);
+	trace_binder_transaction_node_to_ref(t, node, ref);
+	binder_debug(BINDER_DEBUG_TRANSACTION,
+		     "        node %d u%016llx -> ref %d desc %d\n",
+		     node->debug_id, (u64)node->ptr,
+		     ref->debug_id, ref->desc);
+	return 0;
+	}
+
+在这个方法里执行了生成`binder_node`实体，加入到此服务进程的`proc` 的`rb_node`的红黑树中，然后生成`ref`加到`target_proc`的`refs_by_desc`，至此调用`ADD_SERVICE`的准备工作结束，我们具体看下上面两步工作：
+binder_new_node():
+
+	static struct binder_node *binder_new_node(struct binder_proc *proc,
+					   binder_uintptr_t ptr,
+					   binder_uintptr_t cookie)
+{
+	struct rb_node **p = &proc->nodes.rb_node;
+	struct rb_node *parent = NULL;
+	struct binder_node *node;
+	while (*p) {
+		parent = *p;
+		node = rb_entry(parent, struct binder_node, rb_node);
+		if (ptr < node->ptr)
+			p = &(*p)->rb_left;
+		else if (ptr > node->ptr)
+			p = &(*p)->rb_right;
+		else
+			return NULL;
+	}
+	node = kzalloc_preempt_disabled(sizeof(*node));
+	if (node == NULL)
+		return NULL;
+	binder_stats_created(BINDER_STAT_NODE);
+	rb_link_node(&node->rb_node, parent, p);
+	rb_insert_color(&node->rb_node, &proc->nodes);
+	node->debug_id = ++binder_last_id;
+	node->proc = proc;
+	node->ptr = ptr;
+	node->cookie = cookie;
+	node->work.type = BINDER_WORK_NODE;
+	INIT_LIST_HEAD(&node->work.entry);
+	INIT_LIST_HEAD(&node->async_todo);
+	binder_debug(BINDER_DEBUG_INTERNAL_REFS,
+		     "%d:%d node %d u%016llx c%016llx created\n",
+		     proc->pid, current->pid, node->debug_id,
+		     (u64)node->ptr, (u64)node->cookie);
+	return node;
+	}
+
+ref = binder_get_ref_for_node(target_proc, node):
+
+	static struct binder_ref *binder_get_ref_for_node(struct binder_proc *proc,
+						  struct binder_node *node)
+{
+	struct rb_node *n;
+	struct rb_node **p = &proc->refs_by_node.rb_node;
+	struct rb_node *parent = NULL;
+	struct binder_ref *ref, *new_ref;
+	struct binder_context *context = proc->context;
+	while (*p) {
+		parent = *p;
+		ref = rb_entry(parent, struct binder_ref, rb_node_node);
+		if (node < ref->node)
+			p = &(*p)->rb_left;
+		else if (node > ref->node)
+			p = &(*p)->rb_right;
+		else
+			return ref;
+	}
+	new_ref = kzalloc_preempt_disabled(sizeof(*ref));
+	if (new_ref == NULL)
+		return NULL;
+	binder_stats_created(BINDER_STAT_REF);
+	new_ref->debug_id = ++binder_last_id;
+	new_ref->proc = proc;
+	new_ref->node = node;
+	rb_link_node(&new_ref->rb_node_node, parent, p);
+	rb_insert_color(&new_ref->rb_node_node, &proc->refs_by_node);
+	new_ref->desc = (node == context->binder_context_mgr_node) ? 0 : 1;
+	for (n = rb_first(&proc->refs_by_desc); n != NULL; n = rb_next(n)) {
+		ref = rb_entry(n, struct binder_ref, rb_node_desc);
+		if (ref->desc > new_ref->desc)
+			break;
+		new_ref->desc = ref->desc + 1;
+	}
+	p = &proc->refs_by_desc.rb_node;
+	while (*p) {
+		parent = *p;
+		ref = rb_entry(parent, struct binder_ref, rb_node_desc);
+		if (new_ref->desc < ref->desc)
+			p = &(*p)->rb_left;
+		else if (new_ref->desc > ref->desc)
+			p = &(*p)->rb_right;
+		else
+			BUG();
+	}
+	rb_link_node(&new_ref->rb_node_desc, parent, p);
+	rb_insert_color(&new_ref->rb_node_desc, &proc->refs_by_desc);
+	if (node) {
+		hlist_add_head(&new_ref->node_entry, &node->refs);
+		binder_debug(BINDER_DEBUG_INTERNAL_REFS,
+			     "%d new ref %d desc %d for node %d\n",
+			      proc->pid, new_ref->debug_id, new_ref->desc,
+			      node->debug_id);
+	} else {
+		binder_debug(BINDER_DEBUG_INTERNAL_REFS,
+			     "%d new ref %d desc %d for dead node\n",
+			      proc->pid, new_ref->debug_id, new_ref->desc);
+	}
+	return new_ref;
+	}
+	
 终于等到你还好我没放弃，我们千辛万苦拿到了大boss--0号实体--
 然后执行了下面的:
 
@@ -1723,4 +1925,11 @@ err_no_context_mgr_node:
 		target_wait = &target_proc->wait;
 	}
 
-这时候thread应该是null？？？？，因此target_list=&target_proc->todo 会被执行，下一步肯定是把要执行的内容加到“todo”列表里面去
+这时候thread应该是null？？？？，因此target_list=&target_proc->todo 会被执行，下一步肯定是把要执行的内容加到“todo”列表里面去,往后看到两句：
+
+	t->work.type = BINDER_WORK_TRANSACTION;
+list_add_tail(&t->work.entry, target_list);
+tcomplete->type = BINDER_WORK_TRANSACTION_COMPLETE;
+	list_add_tail(&tcomplete->entry, &thread->todo);
+
+此时“client”和驱动层该做的都完备了额，`smr`就解析就完事了，接着跳到`smr`去分析：
