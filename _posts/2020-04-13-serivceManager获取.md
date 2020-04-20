@@ -61,13 +61,13 @@ smr这个服务是所有client可以主动知晓其handle-0的服务，作为一
 + framwork/native/libs/binder/ProcessState.cpp
 
 	sp<ProcessState> ProcessState::self()
-{
-    Mutex::Autolock _l(gProcessMutex);
-    if (gProcess != NULL) {
-        return gProcess;
-    }
-    gProcess = new ProcessState("/dev/binder");
-    return gProcess;
+	{
+    	Mutex::Autolock _l(gProcessMutex);
+   	 if (gProcess != NULL) {
+   	     return gProcess;
+    	}
+    	gProcess = new ProcessState("/dev/binder");
+    	return gProcess;
 	}
 
 
@@ -490,7 +490,7 @@ restart:
     return NO_ERROR;
 	}
 
-声明一个`binder_data_transaction`类型的tr,将data里面的数据分别赋值给此结构体tr对应的成员变量，最后将tr和cmd写入到`Parcel`类型的容器mOut中去，至此本函数完毕。
+声明一个`binder_data_transaction`类型的tr,将data里面的数据分别赋值给此结构体tr对应的成员变量，`cmd`变量设置为`BC_TRANSCATION`最后将tr和cmd写入到`Parcel`类型的容器mOut中去，至此本函数完毕。
 
 再回溯到上面看第二个函数`waitForResponse(reply)`
 
@@ -792,6 +792,7 @@ err_unlocked:
 	}
 
 首先是从该个进程的`proc`中的`rb_node`类型的threades.rb_node去寻找一下，这里面我们碰到一个`current`这个玩意，并没有发现其踪迹何在binder.c中，我们看下：`current.h`:
+	
 	#ifndef _ASM_X86_CURRENT_H
 #define _ASM_X86_CURRENT_H
 #include <linux/compiler.h>
